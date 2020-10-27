@@ -18,12 +18,12 @@ static pthread_t cexec_handle, iexec_handle;
 // c_exec context and caller context
 ucontext_t caller_context, cexec_context;
 //queues
-struct queue ready_queue;
+struct queue ready_queue, wait_queue, to_io_queue, from_io_queue;
 // mutex lock
 static pthread_mutex_t ready_queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t shutdown_lock = PTHREAD_MUTEX_INITIALIZER;
-int num_tasks_created= 0;
-int num_tasks_completed = 0;
+atomic_int num_tasks_created= 0;
+atomic_int num_tasks_completed = 0;
 
 TCB tcb_arr[MAX_NUM_THREADS];
 ucontext_t context_arr[MAX_NUM_THREADS];
@@ -50,11 +50,10 @@ void * c_exec(void *arg){
             }
             usleep(100);
             pthread_mutex_lock(&ready_queue_lock);
-            ptr = queue_pop_head(&ready_queue);
+            ptr = queue_peek_front(&ready_queue);
             pthread_mutex_unlock(&ready_queue_lock);
         }
         tcb = (TCB *)ptr->data;
-        printf("Popped task ID: %d\n", tcb->thread_id);
         getcontext(&cexec_context);
         cexec_context.uc_stack.ss_sp = (char *)malloc(THREAD_STACK_SIZE);
         cexec_context.uc_stack.ss_size = THREAD_STACK_SIZE;
@@ -92,6 +91,7 @@ bool sut_create(sut_task_f fn){
         fprintf(stderr, "ERROR: Exceeded maximum number of threads.\n");
         return false;
     }
+    num_threads++;
     // task control block to enqueue
     TCB *tcb;
     tcb = &(tcb_arr[num_threads]);
@@ -109,20 +109,19 @@ bool sut_create(sut_task_f fn){
     pthread_mutex_lock(&ready_queue_lock);
     queue_insert_tail(&ready_queue, node);
     pthread_mutex_unlock(&ready_queue_lock);
-    num_threads++;
     num_tasks_created++;
 
+    
     printf("Task id %d created.\nNumber of threads: %d\n", tcb->thread_id, num_threads);
     return true;
 }
 
 void sut_yield(){
     int temp_thread, next_thread;
-    next_thread = (current_thread + 1) % MAX_NUM_THREADS;
+    next_thread = (current_thread + 1) % num_threads;
     temp_thread = current_thread;
     current_thread = next_thread;
     getcontext(&(tcb_arr[temp_thread].thread_context));
-    printf("Yielding thread id %d\n\n", tcb_arr[temp_thread].thread_id);
     struct queue_entry *node = queue_new_node(&tcb_arr[temp_thread]);
     pthread_mutex_lock(&ready_queue_lock);
     queue_insert_tail(&ready_queue, node);
@@ -134,6 +133,8 @@ void sut_yield(){
 void sut_exit(){
     printf("Task exiting...\n");
     num_tasks_completed++;
+    printf("Number of tasks created: %d\n", num_tasks_created);
+    printf("Number of tasks completed: %d\n", num_tasks_completed);
     ucontext_t dummy_context;
     swapcontext(&dummy_context, &cexec_context);
 }
