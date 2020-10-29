@@ -121,10 +121,30 @@ void *i_exec(void *arg)
             pthread_mutex_lock(&to_io_queue_lock);
             io_ptr = queue_peek_front(&to_io_queue);
             pthread_mutex_unlock(&to_io_queue_lock);
+            // add a break here to test first three tests without the IO part
+            // taking over the console
+            // BREAK BELOW
         }
-        usleep(1000 * 1000);
+        // BREAK BELOW
         icb = (ICB *)io_ptr->data;
         printf("FUCK YEAH!!! %s %d\n", icb->dest, icb->port);
+
+        if (connect_to_server(icb->dest, icb->port, &sockfd) < 0)
+        {
+            fprintf(stderr, "Error connecting to the server\n");
+        }
+        printf("Connection to server successful\n");
+        pthread_mutex_lock(&wait_queue_lock);
+        wq_ptr = queue_pop_head(&wait_queue);
+        pthread_mutex_unlock(&wait_queue_lock);
+
+        pthread_mutex_lock(&ready_queue_lock);
+        queue_insert_tail(&ready_queue, wq_ptr);
+        pthread_mutex_unlock(&ready_queue_lock);
+
+        pthread_mutex_lock(&to_io_queue_lock);
+        io_ptr = queue_pop_head(&to_io_queue);
+        pthread_mutex_unlock(&to_io_queue_lock);
     }
 
 } // i_exec
