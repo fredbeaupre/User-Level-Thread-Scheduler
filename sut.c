@@ -63,7 +63,6 @@ void *c_exec(void *arg)
     struct queue_entry *ptr;
     // declare task control block
     TCB *tcb;
-    ucontext_t context_to_execute; // not used?
     while (true)
     {
         // peek queue_head
@@ -105,7 +104,29 @@ void *c_exec(void *arg)
 
 void *i_exec(void *arg)
 {
-    printf("Hello form i_exec");
+    TCB *tcb;
+    ICB *icb;
+
+    struct queue_entry *wq_ptr;
+    struct queue_entry *io_ptr;
+    while (true)
+    {
+        pthread_mutex_lock(&to_io_queue_lock);
+        io_ptr = queue_peek_front(&to_io_queue);
+        pthread_mutex_unlock(&to_io_queue_lock);
+        while (!io_ptr)
+        {
+            printf("tried Popping shieet\n");
+            usleep(100);
+            pthread_mutex_lock(&to_io_queue_lock);
+            io_ptr = queue_peek_front(&to_io_queue);
+            pthread_mutex_unlock(&to_io_queue_lock);
+        }
+        usleep(1000 * 1000);
+        icb = (ICB *)io_ptr->data;
+        printf("FUCK YEAH!!! %s %d\n", icb->dest, icb->port);
+    }
+
 } // i_exec
 
 void sut_init()
@@ -186,20 +207,19 @@ void sut_yield()
 
 void sut_exit()
 {
+    ucontext_t context_to_kill;
     printf("Task exiting...\n");
     num_tasks_completed++;
     printf("Number of tasks created: %d\n", num_tasks_created);
     printf("Number of tasks completed: %d\n", num_tasks_completed);
-    ucontext_t dummy_context;
-    swapcontext(&dummy_context, &cexec_context);
+    swapcontext(&context_to_kill, &cexec_context);
 } // sut_exit
 
 void sut_open(char *dest, int port)
 {
-    TCB *tcb;
-    ICB *icb;
-    tcb = malloc(sizeof(tcb)); // weird but works
-    icb = malloc(sizeof(icb));
+    TCB *tcb = (TCB *)malloc(THREAD_STACK_SIZE);
+    ICB *icb = (ICB *)malloc(THREAD_STACK_SIZE);
+    ;
 
     // get context of function which called sut_open, store in wait queue while io processes the request
     getcontext(&(tcb->thread_context));
@@ -216,35 +236,37 @@ void sut_open(char *dest, int port)
     queue_insert_tail(&to_io_queue, node2);
     pthread_mutex_unlock(&to_io_queue_lock);
 
+    // create i_exec_context, seems not to work if we don't do this
     getcontext(&iexec_context);
     iexec_context.uc_stack.ss_sp = (char *)malloc(THREAD_STACK_SIZE);
     iexec_context.uc_stack.ss_size = THREAD_STACK_SIZE;
     iexec_context.uc_link = &cexec_context;
     iexec_context.uc_stack.ss_flags = 0;
     makecontext(&iexec_context, (void *)i_exec, 0);
-    swapcontext(&(tcb->thread_context), &iexec_context);
 
-    // now we swap to iexec_context
+    swapcontext(&(tcb->thread_context), &cexec_context);
 
 } // sut_open
 
 void sut_write(char *buf, int size)
 {
-
+    printf("We are in write\n");
 } // sut_write
 
 char *sut_read()
 {
+    printf("We are in read\n");
 } // sut_read
 
 void sut_close()
 {
+    printf("We are in close\n");
 } // sut_close
 
 void sut_shutdown()
 {
 
-    // pthread_join(iexec_handle, NULL);
+    pthread_join(iexec_handle, NULL); // remove this if tests 1-3 do not terminate
     printf("Sending shutdown signal...\n");
     // notify c_exec user will be ready to shutdown once tasks have completed
     pthread_mutex_lock(&shutdown_lock);
