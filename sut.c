@@ -105,29 +105,7 @@ void *c_exec(void *arg)
 
 void *i_exec(void *arg)
 {
-    struct queue_entry *ptr;
-    ICB *icb;
-    int sockfd;
-    while (true)
-    {
-        pthread_mutex_lock(&to_io_queue_lock);
-        ptr = queue_peek_front(&ready_queue);
-        pthread_mutex_unlock(&to_io_queue_lock);
-        while (!ptr)
-        {
-            usleep(100);
-            pthread_mutex_lock(&to_io_queue_lock);
-            ptr = queue_peek_front(&to_io_queue);
-            pthread_mutex_unlock(&to_io_queue_lock);
-        }
-        icb = (ICB *)ptr->data;
-        getcontext(&iexec_context);
-        iexec_context.uc_stack.ss_sp = (char *)malloc(THREAD_STACK_SIZE);
-        iexec_context.uc_stack.ss_size = THREAD_STACK_SIZE;
-        iexec_context.uc_link = &caller_context;
-        iexec_context.uc_stack.ss_flags = 0;
-        create_server(icb->dest, icb->port, &sockfd);
-    }
+    printf("Hello form i_exec");
 } // i_exec
 
 void sut_init()
@@ -238,13 +216,16 @@ void sut_open(char *dest, int port)
     queue_insert_tail(&to_io_queue, node2);
     pthread_mutex_unlock(&to_io_queue_lock);
 
-    /* if (connect_to_server("127.0.0.1", port, &sockfd) < 0)
-    {
-        fprintf(stderr, "Error in connecting to the remote server\n");
-        EXIT_FAILURE;
-    }
-    printf("Connection to server successful\n"); 
-    */
+    getcontext(&iexec_context);
+    iexec_context.uc_stack.ss_sp = (char *)malloc(THREAD_STACK_SIZE);
+    iexec_context.uc_stack.ss_size = THREAD_STACK_SIZE;
+    iexec_context.uc_link = &cexec_context;
+    iexec_context.uc_stack.ss_flags = 0;
+    makecontext(&iexec_context, (void *)i_exec, 0);
+    swapcontext(&(tcb->thread_context), &iexec_context);
+
+    // now we swap to iexec_context
+
 } // sut_open
 
 void sut_write(char *buf, int size)
