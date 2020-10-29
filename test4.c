@@ -2,27 +2,33 @@
 #include <stdio.h>
 #include <string.h>
 
-void hello1() {
+void hello1()
+{
     int i;
     char sbuf[128];
-    for (i = 0; i < 100; i++) {
-	sprintf(sbuf, "Hello world!, message from SUT-One i = %d \n", i);
-	sut_write(sbuf, strlen(sbuf));
-	sut_yield();
+    sut_open("127.0.0.1", 4444);
+    for (i = 0; i < 100; i++)
+    {
+        sprintf(sbuf, "Hello world!, message from SUT-One i = %d \n", i);
+        sut_write(sbuf, strlen(sbuf));
+        sut_yield();
     }
     sut_exit();
 }
 
-void hello2() {
+void hello2()
+{
     int i;
-    for (i = 0; i < 100; i++) {
-	printf("Hello world!, this is SUT-Two \n");
-	sut_yield();
+    for (i = 0; i < 100; i++)
+    {
+        printf("Hello world!, this is SUT-Two \n");
+        sut_yield();
     }
     sut_exit();
 }
 
-int main() {
+int main()
+{
     sut_init();
     sut_create(hello1);
     sut_create(hello2);

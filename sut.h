@@ -3,6 +3,11 @@
 #include <stdbool.h>
 #include <ucontext.h>
 
+typedef struct io_control_block {
+    char dest[1024];
+    int port;
+} ICB;
+
 typedef struct task_control_block{
     int thread_id;
     char *thread_stack;
