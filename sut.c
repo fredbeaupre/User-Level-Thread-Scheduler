@@ -41,7 +41,11 @@ static pthread_mutex_t wait_queue_lock = PTHREAD_MUTEX_INITIALIZER;
 atomic_int num_tasks_created = 0;
 atomic_int num_tasks_completed = 0;
 bool shutdown_flag = false;
-bool open_flag = false;
+// to make sure iexec exits before cexec can.
+// See conditions for exiting in respective functions
+
+bool iexec_flag = false;
+char server_msg[1024] = {0};
 
 // array of task control blocks (what we enqueue to ready_queue)
 TCB tcb_arr[MAX_NUM_THREADS];
@@ -76,7 +80,7 @@ void *c_exec(void *arg)
         while (!ptr)
         {
             // if queue is empty AND all tasks have completed -> shutdown
-            if (shutdown_flag && num_tasks_completed == num_tasks_created)
+            if (shutdown_flag && iexec_flag && num_tasks_completed == num_tasks_created)
             {
                 exit(0);
             }
@@ -120,6 +124,7 @@ void *i_exec(void *arg)
         {
             if (shutdown_flag && num_tasks_completed == num_tasks_created)
             {
+                iexec_flag = true;
                 printf("Received shutdown signal, no more tasks scheduled to run...terminating program.\n");
                 exit(0);
             }
@@ -163,9 +168,18 @@ void *i_exec(void *arg)
             io_ptr = queue_pop_head(&to_io_queue);
             pthread_mutex_unlock(&to_io_queue_lock);
         }
+        if (icb->id == 2) // function call is sut_read
+        {
+            ssize_t byte_count = recv_message(sockfd, server_msg, sizeof(server_msg));
+            if (byte_count <= 0)
+            {
+                break;
+            }
+            pthread_mutex_lock(&to_io_queue_lock);
+            io_ptr = queue_pop_head(&to_io_queue);
+            pthread_mutex_unlock(&to_io_queue_lock);
+        }
     }
-    printf("Trying to exit?\n");
-
 } // i_exec
 
 void sut_init()
@@ -302,7 +316,21 @@ void sut_write(char *buf, int size)
 
 char *sut_read()
 {
-    printf("We are in read\n");
+    ICB *icb = (ICB *)malloc(THREAD_STACK_SIZE);
+    TCB *tcb = (TCB *)malloc(THREAD_STACK_SIZE);
+
+    getcontext(&(tcb->thread_context));
+    pthread_mutex_lock(&wait_queue_lock);
+    struct queue_entry *node2 = queue_new_node(tcb);
+    queue_insert_tail(&wait_queue, node2);
+    pthread_mutex_unlock(&wait_queue_lock);
+
+    icb->id = 2;
+    pthread_mutex_lock(&to_io_queue_lock);
+    struct queue_entry *node = queue_new_node(icb);
+    queue_insert_tail(&to_io_queue, node);
+    pthread_mutex_unlock(&to_io_queue_lock);
+    return server_msg;
 } // sut_read
 
 void sut_close()
@@ -316,9 +344,9 @@ void sut_shutdown()
     // notify c_exec user will be ready to shutdown once tasks have completed
     pthread_mutex_lock(&shutdown_lock);
     shutdown_flag = true;
+    pthread_join(iexec_handle, NULL); // remove this if tests 1-3 do not terminate
     pthread_join(cexec_handle, NULL);
     pthread_mutex_unlock(&shutdown_lock);
-    pthread_join(iexec_handle, NULL); // remove this if tests 1-3 do not terminate
 } // sut_shutdown
 
 /////////////////////// CODE BELOW IS FROM ASSIGNMENT 1 //////////////////////////////////////////
