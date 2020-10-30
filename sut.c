@@ -78,7 +78,6 @@ void *c_exec(void *arg)
             // if queue is empty AND all tasks have completed -> shutdown
             if (shutdown_flag && num_tasks_completed == num_tasks_created)
             {
-                printf("Received shutdown signal, no more tasks scheduled to run...terminating program.\n");
                 exit(0);
             }
             // sleep for 100 microseconds then try again
@@ -119,6 +118,12 @@ void *i_exec(void *arg)
         pthread_mutex_unlock(&to_io_queue_lock);
         while (!io_ptr)
         {
+            if (shutdown_flag && num_tasks_completed == num_tasks_created)
+            {
+                printf("Received shutdown signal, no more tasks scheduled to run...terminating program.\n");
+                exit(0);
+            }
+
             usleep(100);
             pthread_mutex_lock(&to_io_queue_lock);
             io_ptr = queue_peek_front(&to_io_queue);
@@ -159,6 +164,7 @@ void *i_exec(void *arg)
             pthread_mutex_unlock(&to_io_queue_lock);
         }
     }
+    printf("Trying to exit?\n");
 
 } // i_exec
 
@@ -306,14 +312,13 @@ void sut_close()
 
 void sut_shutdown()
 {
-
-    pthread_join(iexec_handle, NULL); // remove this if tests 1-3 do not terminate
     printf("Sending shutdown signal...\n");
     // notify c_exec user will be ready to shutdown once tasks have completed
     pthread_mutex_lock(&shutdown_lock);
     shutdown_flag = true;
     pthread_join(cexec_handle, NULL);
     pthread_mutex_unlock(&shutdown_lock);
+    pthread_join(iexec_handle, NULL); // remove this if tests 1-3 do not terminate
 } // sut_shutdown
 
 /////////////////////// CODE BELOW IS FROM ASSIGNMENT 1 //////////////////////////////////////////
