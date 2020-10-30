@@ -41,6 +41,7 @@ static pthread_mutex_t wait_queue_lock = PTHREAD_MUTEX_INITIALIZER;
 atomic_int num_tasks_created = 0;
 atomic_int num_tasks_completed = 0;
 bool shutdown_flag = false;
+bool open_flag = false;
 
 // array of task control blocks (what we enqueue to ready_queue)
 TCB tcb_arr[MAX_NUM_THREADS];
@@ -56,6 +57,8 @@ void *c_exec(void *arg);
 void *i_exec(void *arg);
 int create_server(const char *host, uint16_t port, int *sockfd);
 int connect_to_server(const char *host, uint16_t port, int *sockfd);
+ssize_t send_message(int sockfd, const char *buf, size_t len);
+ssize_t recv_message(int sockfd, char *buf, size_t len);
 
 void *c_exec(void *arg)
 {
@@ -116,7 +119,6 @@ void *i_exec(void *arg)
         pthread_mutex_unlock(&to_io_queue_lock);
         while (!io_ptr)
         {
-            printf("tried Popping shieet\n");
             usleep(100);
             pthread_mutex_lock(&to_io_queue_lock);
             io_ptr = queue_peek_front(&to_io_queue);
@@ -127,24 +129,35 @@ void *i_exec(void *arg)
         }
         // BREAK BELOW
         icb = (ICB *)io_ptr->data;
-        printf("FUCK YEAH!!! %s %d\n", icb->dest, icb->port);
 
-        if (connect_to_server(icb->dest, icb->port, &sockfd) < 0)
+        if (icb->id == 0) // if function call is sut_open
         {
-            fprintf(stderr, "Error connecting to the server\n");
+            if (connect_to_server(icb->dest, icb->port, &sockfd) < 0)
+            {
+                fprintf(stderr, "Error connecting to the server\n");
+            }
+            printf("Connection to server successful\n");
+            pthread_mutex_lock(&wait_queue_lock);
+            wq_ptr = queue_pop_head(&wait_queue);
+            pthread_mutex_unlock(&wait_queue_lock);
+
+            pthread_mutex_lock(&ready_queue_lock);
+            queue_insert_tail(&ready_queue, wq_ptr);
+            pthread_mutex_unlock(&ready_queue_lock);
+
+            pthread_mutex_lock(&to_io_queue_lock);
+            io_ptr = queue_pop_head(&to_io_queue);
+            pthread_mutex_unlock(&to_io_queue_lock);
         }
-        printf("Connection to server successful\n");
-        pthread_mutex_lock(&wait_queue_lock);
-        wq_ptr = queue_pop_head(&wait_queue);
-        pthread_mutex_unlock(&wait_queue_lock);
+        if (icb->id == 1)
+        { // if function call is sut_write
+            printf("%s \n", icb->dest);
+            send_message(sockfd, icb->dest, icb->port);
 
-        pthread_mutex_lock(&ready_queue_lock);
-        queue_insert_tail(&ready_queue, wq_ptr);
-        pthread_mutex_unlock(&ready_queue_lock);
-
-        pthread_mutex_lock(&to_io_queue_lock);
-        io_ptr = queue_pop_head(&to_io_queue);
-        pthread_mutex_unlock(&to_io_queue_lock);
+            pthread_mutex_lock(&to_io_queue_lock);
+            io_ptr = queue_pop_head(&to_io_queue);
+            pthread_mutex_unlock(&to_io_queue_lock);
+        }
     }
 
 } // i_exec
@@ -239,7 +252,6 @@ void sut_open(char *dest, int port)
 {
     TCB *tcb = (TCB *)malloc(THREAD_STACK_SIZE);
     ICB *icb = (ICB *)malloc(THREAD_STACK_SIZE);
-    ;
 
     // get context of function which called sut_open, store in wait queue while io processes the request
     getcontext(&(tcb->thread_context));
@@ -250,6 +262,7 @@ void sut_open(char *dest, int port)
 
     // struct with socket connection info to enqueue to to_io_queue
     icb->port = port;
+    icb->id = 0;
     strcpy(icb->dest, dest);
     pthread_mutex_lock(&to_io_queue_lock);
     struct queue_entry *node2 = queue_new_node(icb);
@@ -270,7 +283,15 @@ void sut_open(char *dest, int port)
 
 void sut_write(char *buf, int size)
 {
-    printf("We are in write\n");
+    ICB *icb = (ICB *)malloc(THREAD_STACK_SIZE);
+    icb->id = 1;
+    strcpy(icb->dest, buf);
+    icb->port = size;
+    pthread_mutex_lock(&to_io_queue_lock);
+    struct queue_entry *node = queue_new_node(icb);
+    queue_insert_tail(&to_io_queue, node);
+    pthread_mutex_unlock(&to_io_queue_lock);
+
 } // sut_write
 
 char *sut_read()

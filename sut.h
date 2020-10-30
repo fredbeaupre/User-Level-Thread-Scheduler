@@ -3,12 +3,15 @@
 #include <stdbool.h>
 #include <ucontext.h>
 
-typedef struct io_control_block {
+typedef struct io_control_block
+{
+    int id;
     char dest[1024];
     int port;
 } ICB;
 
-typedef struct task_control_block{
+typedef struct task_control_block
+{
     int thread_id;
     char *thread_stack;
     void *thread_function;
@@ -26,6 +29,5 @@ void sut_write(char *buf, int size);
 void sut_close();
 char *sut_read();
 void sut_shutdown();
-
 
 #endif
