@@ -125,7 +125,6 @@ void *i_exec(void *arg)
             if (shutdown_flag && num_tasks_completed == num_tasks_created)
             {
                 iexec_flag = true;
-                printf("Received shutdown signal, no more tasks scheduled to run...terminating program.\n");
                 exit(0);
             }
 
@@ -146,7 +145,6 @@ void *i_exec(void *arg)
             {
                 fprintf(stderr, "Error connecting to the server\n");
             }
-            printf("Created socket connection with fd %d\n", sockfd);
             pthread_mutex_lock(&wait_queue_lock);
             wq_ptr = queue_pop_head(&wait_queue);
             pthread_mutex_unlock(&wait_queue_lock);
@@ -162,7 +160,6 @@ void *i_exec(void *arg)
         else if (icb->id == 1)
         { // if function call is sut_write
             send_message(sockfd, icb->dest, strlen(icb->dest));
-            printf("Message sent to server: %s", icb->dest); // remove this?
             pthread_mutex_lock(&to_io_queue_lock);
             io_ptr = queue_pop_head(&to_io_queue);
             pthread_mutex_unlock(&to_io_queue_lock);
@@ -179,6 +176,13 @@ void *i_exec(void *arg)
             queue_insert_tail(&ready_queue, wq_ptr);
             pthread_mutex_unlock(&ready_queue_lock);
 
+            pthread_mutex_lock(&to_io_queue_lock);
+            io_ptr = queue_pop_head(&to_io_queue);
+            pthread_mutex_unlock(&to_io_queue_lock);
+        }
+        else if (icb->id == 3)
+        {
+            close(sockfd);
             pthread_mutex_lock(&to_io_queue_lock);
             io_ptr = queue_pop_head(&to_io_queue);
             pthread_mutex_unlock(&to_io_queue_lock);
@@ -209,7 +213,6 @@ void sut_init()
         fprintf(stderr, "Error when creating the kernel threads. Terminating program.\n");
         exit(-1);
     }
-    printf("Initialization completed successfully.\n");
 } // sut_init
 
 bool sut_create(sut_task_f fn)
@@ -242,7 +245,6 @@ bool sut_create(sut_task_f fn)
     pthread_mutex_unlock(&ready_queue_lock);
     num_tasks_created++;
 
-    printf("Task id %d created.\nNumber of threads: %d\n", tcb->thread_id, num_threads);
     return true;
 } // sut_create
 
@@ -265,10 +267,7 @@ void sut_yield()
 void sut_exit()
 {
     ucontext_t context_to_kill;
-    printf("Task exiting...\n");
     num_tasks_completed++;
-    printf("Number of tasks created: %d\n", num_tasks_created);
-    printf("Number of tasks completed: %d\n", num_tasks_completed);
     swapcontext(&context_to_kill, &cexec_context);
 } // sut_exit
 
@@ -335,12 +334,16 @@ char *sut_read()
 
 void sut_close()
 {
-    printf("We are in close\n");
+    ICB *icb = (ICB *)malloc(THREAD_STACK_SIZE);
+    icb->id = 3;
+    pthread_mutex_lock(&to_io_queue_lock);
+    struct queue_entry *node = queue_new_node(icb);
+    queue_insert_tail(&to_io_queue, node);
+    pthread_mutex_unlock(&to_io_queue_lock);
 } // sut_close
 
 void sut_shutdown()
 {
-    printf("Sending shutdown signal...\n");
     // notify c_exec user will be ready to shutdown once tasks have completed
     pthread_mutex_lock(&shutdown_lock);
     shutdown_flag = true;

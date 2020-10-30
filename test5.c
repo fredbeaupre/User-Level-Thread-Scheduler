@@ -19,6 +19,7 @@ void hello1()
             printf("ERROR!, empty message received \n");
         sut_yield();
     }
+    sut_close();
     sut_exit();
 }
 
