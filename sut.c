@@ -41,6 +41,7 @@ static pthread_mutex_t wait_queue_lock = PTHREAD_MUTEX_INITIALIZER;
 atomic_int num_tasks_created = 0;
 atomic_int num_tasks_completed = 0;
 bool shutdown_flag = false;
+bool open_flag = false;
 // to make sure iexec exits before cexec can.
 // See conditions for exiting in respective functions
 
@@ -111,23 +112,25 @@ void *i_exec(void *arg)
 {
     TCB *tcb;
     ICB *icb;
-    char temp_msg[1024];
 
+    // wait_queue and to_io_queue pointers when popping
     struct queue_entry *wq_ptr;
     struct queue_entry *io_ptr;
     while (true)
     {
+        // peek front of to_io_queue
         pthread_mutex_lock(&to_io_queue_lock);
         io_ptr = queue_peek_front(&to_io_queue);
         pthread_mutex_unlock(&to_io_queue_lock);
-        while (!io_ptr)
+        while (!io_ptr) // if queue is empty
         {
+            // check shutdown condition
             if (shutdown_flag && num_tasks_completed == num_tasks_created)
             {
                 iexec_flag = true;
                 exit(0);
             }
-
+            // if !(shutdown condition) => sleep for 100 microseconds and try again
             usleep(100);
             pthread_mutex_lock(&to_io_queue_lock);
             io_ptr = queue_peek_front(&to_io_queue);
@@ -141,24 +144,36 @@ void *i_exec(void *arg)
 
         if (icb->id == 0) // if function call is sut_open
         {
+            // connect to server
             if (connect_to_server(icb->dest, icb->port, &sockfd) < 0)
             {
                 fprintf(stderr, "Error connecting to the server\n");
             }
+            // set open_flag to true so that other io calls can safely be performed
+            open_flag = true;
+            // now that server is created, move task from wait_queue to ready_queue
+            // so that it can later be scheduled by c_exec
             pthread_mutex_lock(&wait_queue_lock);
             wq_ptr = queue_pop_head(&wait_queue);
             pthread_mutex_unlock(&wait_queue_lock);
-
             pthread_mutex_lock(&ready_queue_lock);
             queue_insert_tail(&ready_queue, wq_ptr);
             pthread_mutex_unlock(&ready_queue_lock);
 
+            // pop next element in the queue
             pthread_mutex_lock(&to_io_queue_lock);
             io_ptr = queue_pop_head(&to_io_queue);
             pthread_mutex_unlock(&to_io_queue_lock);
         }
-        else if (icb->id == 1)
-        { // if function call is sut_write
+        else if (icb->id == 1) // if function call is sut_write
+        {
+            if (!open_flag) // checks that sut_open was called prior to this
+            {
+                // if not, print error and exit
+                fprintf(stderr, "ERROR, no prior successful sut_open call.\n");
+                exit(-1);
+            }
+            // send message to the server
             send_message(sockfd, icb->dest, strlen(icb->dest));
             pthread_mutex_lock(&to_io_queue_lock);
             io_ptr = queue_pop_head(&to_io_queue);
@@ -166,8 +181,17 @@ void *i_exec(void *arg)
         }
         else if (icb->id == 2) // function call is sut_read
         {
+            if (!open_flag) // check sut_open was called prior to this
+            {
+                fprintf(stderr, "ERROR, no prior successful sut_open call.\n");
+                exit(-1);
+            }
+            // received message back from the server, which corresponds to the message sent
+            // in the previous sut_write call
             recv_message(sockfd, server_msg, sizeof(server_msg));
 
+            // I/O is done with sut_read, so move task from wait_queue to ready_queue so it can later be
+            // scheduled by C_exec
             pthread_mutex_lock(&wait_queue_lock);
             wq_ptr = queue_pop_head(&wait_queue);
             pthread_mutex_unlock(&wait_queue_lock);
@@ -176,13 +200,21 @@ void *i_exec(void *arg)
             queue_insert_tail(&ready_queue, wq_ptr);
             pthread_mutex_unlock(&ready_queue_lock);
 
+            // pop next element in the io_queue
             pthread_mutex_lock(&to_io_queue_lock);
             io_ptr = queue_pop_head(&to_io_queue);
             pthread_mutex_unlock(&to_io_queue_lock);
         }
-        else if (icb->id == 3)
+        else if (icb->id == 3) // if function call is sut_close
         {
+            if (!open_flag) // checks if sut_open was called prior to this
+            {
+                fprintf(stderr, "ERROR, no prior successful sut_open call.\n");
+                exit(-1);
+            }
+            // close socket connection
             close(sockfd);
+            // pop next element in the queue
             pthread_mutex_lock(&to_io_queue_lock);
             io_ptr = queue_pop_head(&to_io_queue);
             pthread_mutex_unlock(&to_io_queue_lock);
@@ -292,12 +324,14 @@ void sut_open(char *dest, int port)
     queue_insert_tail(&to_io_queue, node2);
     pthread_mutex_unlock(&to_io_queue_lock);
 
+    // swap context to c_exec so that it runs concurrently to I/O being performed (no blocking)
     swapcontext(&(tcb->thread_context), &cexec_context);
 
 } // sut_open
 
 void sut_write(char *buf, int size)
 {
+    // signals i_exec to write buf with size size to the socket (non-blocking)
     ICB *icb = (ICB *)malloc(THREAD_STACK_SIZE);
     icb->id = 1;
     strcpy(icb->dest, buf);
@@ -321,7 +355,7 @@ char *sut_read()
     queue_insert_tail(&to_io_queue, node);
     pthread_mutex_unlock(&to_io_queue_lock);
 
-    // then save and swap context
+    // then save current task context and swap context to c_exec
     getcontext(&(tcb->thread_context));
     pthread_mutex_lock(&wait_queue_lock);
     struct queue_entry *node2 = queue_new_node(tcb);
@@ -329,11 +363,14 @@ char *sut_read()
     pthread_mutex_unlock(&wait_queue_lock);
     swapcontext(&(tcb->thread_context), &cexec_context);
 
+    // when I/O has finished with the task, moved it back from wait_queue to ready_queue, and when
+    // C_exec will pop it from the c_exec queue and execute it, the context of the task will restart here
     return server_msg;
 } // sut_read
 
 void sut_close()
 {
+    // signals I_exec to close the socket connection
     ICB *icb = (ICB *)malloc(THREAD_STACK_SIZE);
     icb->id = 3;
     pthread_mutex_lock(&to_io_queue_lock);
@@ -352,7 +389,7 @@ void sut_shutdown()
     pthread_mutex_unlock(&shutdown_lock);
 } // sut_shutdown
 
-/////////////////////// CODE BELOW IS FROM ASSIGNMENT 1 //////////////////////////////////////////
+/////////////////////// CODE BELOW IS FROM ASSIGNMENT 1 (taken from a1_lib.c) //////////////////////////////////////////
 
 int create_server(const char *host, uint16_t port, int *sockfd)
 {
