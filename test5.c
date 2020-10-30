@@ -7,9 +7,11 @@ void hello1()
     int i;
     char *str;
     char sbuf[128];
-    sut_open("127.0.0.1", 4444);
+    sut_open("127.0.0.1", 5000);
     for (i = 0; i < 10; i++)
     {
+        sprintf(sbuf, "Dummy server message\n");
+        sut_write(sbuf, strlen(sbuf));
         str = sut_read();
         if (strlen(str) != 0)
             printf("I am SUT-One, message from server: %s\n", str);

@@ -45,17 +45,16 @@ bool shutdown_flag = false;
 // See conditions for exiting in respective functions
 
 bool iexec_flag = false;
-char server_msg[1024] = {0};
+char server_msg[1024];
 
 // array of task control blocks (what we enqueue to ready_queue)
 TCB tcb_arr[MAX_NUM_THREADS];
-ucontext_t context_arr[MAX_NUM_THREADS]; // not used?
 
 // for swapping contexts
 int current_thread, num_threads;
 
 // socket file descriptor for I/O
-int sockfd;
+static int sockfd;
 
 void *c_exec(void *arg);
 void *i_exec(void *arg);
@@ -112,6 +111,7 @@ void *i_exec(void *arg)
 {
     TCB *tcb;
     ICB *icb;
+    char temp_msg[1024];
 
     struct queue_entry *wq_ptr;
     struct queue_entry *io_ptr;
@@ -146,7 +146,7 @@ void *i_exec(void *arg)
             {
                 fprintf(stderr, "Error connecting to the server\n");
             }
-            printf("Connection to server successful\n");
+            printf("Created socket connection with fd %d\n", sockfd);
             pthread_mutex_lock(&wait_queue_lock);
             wq_ptr = queue_pop_head(&wait_queue);
             pthread_mutex_unlock(&wait_queue_lock);
@@ -159,22 +159,26 @@ void *i_exec(void *arg)
             io_ptr = queue_pop_head(&to_io_queue);
             pthread_mutex_unlock(&to_io_queue_lock);
         }
-        if (icb->id == 1)
+        else if (icb->id == 1)
         { // if function call is sut_write
-            printf("%s \n", icb->dest);
-            send_message(sockfd, icb->dest, icb->port);
-
+            send_message(sockfd, icb->dest, strlen(icb->dest));
+            printf("Message sent to server: %s", icb->dest); // remove this?
             pthread_mutex_lock(&to_io_queue_lock);
             io_ptr = queue_pop_head(&to_io_queue);
             pthread_mutex_unlock(&to_io_queue_lock);
         }
-        if (icb->id == 2) // function call is sut_read
+        else if (icb->id == 2) // function call is sut_read
         {
-            ssize_t byte_count = recv_message(sockfd, server_msg, sizeof(server_msg));
-            if (byte_count <= 0)
-            {
-                break;
-            }
+            recv_message(sockfd, server_msg, sizeof(server_msg));
+
+            pthread_mutex_lock(&wait_queue_lock);
+            wq_ptr = queue_pop_head(&wait_queue);
+            pthread_mutex_unlock(&wait_queue_lock);
+
+            pthread_mutex_lock(&ready_queue_lock);
+            queue_insert_tail(&ready_queue, wq_ptr);
+            pthread_mutex_unlock(&ready_queue_lock);
+
             pthread_mutex_lock(&to_io_queue_lock);
             io_ptr = queue_pop_head(&to_io_queue);
             pthread_mutex_unlock(&to_io_queue_lock);
@@ -289,14 +293,6 @@ void sut_open(char *dest, int port)
     queue_insert_tail(&to_io_queue, node2);
     pthread_mutex_unlock(&to_io_queue_lock);
 
-    // create i_exec_context, seems not to work if we don't do this
-    getcontext(&iexec_context);
-    iexec_context.uc_stack.ss_sp = (char *)malloc(THREAD_STACK_SIZE);
-    iexec_context.uc_stack.ss_size = THREAD_STACK_SIZE;
-    iexec_context.uc_link = &cexec_context;
-    iexec_context.uc_stack.ss_flags = 0;
-    makecontext(&iexec_context, (void *)i_exec, 0);
-
     swapcontext(&(tcb->thread_context), &cexec_context);
 
 } // sut_open
@@ -319,17 +315,21 @@ char *sut_read()
     ICB *icb = (ICB *)malloc(THREAD_STACK_SIZE);
     TCB *tcb = (TCB *)malloc(THREAD_STACK_SIZE);
 
-    getcontext(&(tcb->thread_context));
-    pthread_mutex_lock(&wait_queue_lock);
-    struct queue_entry *node2 = queue_new_node(tcb);
-    queue_insert_tail(&wait_queue, node2);
-    pthread_mutex_unlock(&wait_queue_lock);
-
+    // instruct i_exec to perform the read
     icb->id = 2;
     pthread_mutex_lock(&to_io_queue_lock);
     struct queue_entry *node = queue_new_node(icb);
     queue_insert_tail(&to_io_queue, node);
     pthread_mutex_unlock(&to_io_queue_lock);
+
+    // then save and swap context
+    getcontext(&(tcb->thread_context));
+    pthread_mutex_lock(&wait_queue_lock);
+    struct queue_entry *node2 = queue_new_node(tcb);
+    queue_insert_tail(&wait_queue, node2);
+    pthread_mutex_unlock(&wait_queue_lock);
+    swapcontext(&(tcb->thread_context), &cexec_context);
+
     return server_msg;
 } // sut_read
 
@@ -344,7 +344,7 @@ void sut_shutdown()
     // notify c_exec user will be ready to shutdown once tasks have completed
     pthread_mutex_lock(&shutdown_lock);
     shutdown_flag = true;
-    pthread_join(iexec_handle, NULL); // remove this if tests 1-3 do not terminate
+    pthread_join(iexec_handle, NULL);
     pthread_join(cexec_handle, NULL);
     pthread_mutex_unlock(&shutdown_lock);
 } // sut_shutdown
